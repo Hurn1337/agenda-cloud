@@ -151,9 +151,29 @@ export default function Home() {
   };
 
   const exportWord = async () => {
-    const { generateWord } = await import("@/lib/wordExport");
-    await generateWord(current, "/logo.png");
-    showMessage("Word-Datei erstellt!");
+    try {
+      const res = await fetch("/api/export-word", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(current),
+      });
+      if (!res.ok) {
+        const err = await res.json();
+        showMessage(`Fehler: ${err.error}`);
+        return;
+      }
+      const blob = await res.blob();
+      const vaCode = (current.va_code || "000").replace(/\//g, "_");
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `Agenda_${vaCode}.docx`;
+      a.click();
+      URL.revokeObjectURL(url);
+      showMessage("Word-Datei erstellt!");
+    } catch (err) {
+      showMessage(`Fehler beim Export: ${err}`);
+    }
   };
 
   const exportJson = () => {

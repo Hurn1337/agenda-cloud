@@ -10,9 +10,13 @@
   },
   "dependencies": {
     "@types/file-saver": "^2.0.7",
+    "angular-expressions": "^1.5.1",
     "docx": "^9.6.1",
+    "docxtemplater": "^3.68.3",
+    "docxtemplater-image-module-free": "^1.1.1",
     "file-saver": "^2.0.5",
     "next": "16.2.1",
+    "pizzip": "^3.2.0",
     "react": "19.2.4",
     "react-dom": "19.2.4"
   },
