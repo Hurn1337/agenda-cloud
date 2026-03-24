@@ -34,7 +34,19 @@ export default function Home() {
 
   useEffect(() => {
     const data = loadFromStorage();
-    setFortbildungen(data);
+    if (data.length > 0) {
+      setFortbildungen(data);
+    } else {
+      // First visit: load bundled daten.json
+      fetch("/daten.json")
+        .then((res) => res.json())
+        .then((json: Fortbildung[]) => {
+          json.sort((a, b) => a.titel.toLowerCase().localeCompare(b.titel.toLowerCase()));
+          setFortbildungen(json);
+          saveToStorage(json);
+        })
+        .catch(() => {});
+    }
   }, []);
 
   const referentenList = useMemo(() => {
