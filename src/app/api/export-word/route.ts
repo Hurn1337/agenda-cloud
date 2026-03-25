@@ -80,20 +80,71 @@ function cleanAndMergeXml(xml: string): string {
 
 interface RowData { [key: string]: string }
 
-function processConditionals(xml: string, ctx: Record<string, unknown>): string {
-  const ifRegex = /\{%\s*if\s+([\s\S]*?)\s*%\}([\s\S]*?)\{%\s*else\s*%\}([\s\S]*?)\{%\s*endif\s*%\}/g;
-  return xml.replace(ifRegex, (_match, condition: string, ifBlock: string, elseBlock: string) => {
-    const orParts = condition.split(/\s+or\s+/);
-    let result = false;
-    for (const part of orParts) {
-      const eqMatch = part.trim().match(/(\w+)\.(\w+)\s*==\s*"([^"]*)"/);
-      if (eqMatch) {
-        const obj = ctx[eqMatch[1]] as RowData | undefined;
-        if (obj && obj[eqMatch[2]] === eqMatch[3]) { result = true; break; }
-      }
+// Find the start of the enclosing <w:p> for a given position
+function findEnclosingParagraphStart(xml: string, pos: number): number {
+  const before = xml.substring(0, pos);
+  const pStart = Math.max(before.lastIndexOf("<w:p "), before.lastIndexOf("<w:p>"));
+  return pStart;
+}
+
+// Find the end of the enclosing </w:p> for a given position
+function findEnclosingParagraphEnd(xml: string, pos: number): number {
+  const after = xml.substring(pos);
+  return pos + after.indexOf("</w:p>") + 6;
+}
+
+function evaluateCondition(condition: string, ctx: Record<string, unknown>): boolean {
+  const orParts = condition.split(/\s+or\s+/);
+  for (const part of orParts) {
+    const eqMatch = part.trim().match(/(\w+)\.(\w+)\s*==\s*"([^"]*)"/);
+    if (eqMatch) {
+      const obj = ctx[eqMatch[1]] as RowData | undefined;
+      if (obj && obj[eqMatch[2]] === eqMatch[3]) return true;
     }
-    return result ? ifBlock : elseBlock;
-  });
+  }
+  return false;
+}
+
+// Process conditionals that span across paragraph boundaries:
+// <w:p>{% if ... %}</w:p> ... content ... <w:p>{% else %}</w:p> ... content ... <w:p>{% endif %}</w:p>
+function processConditionals(xml: string, ctx: Record<string, unknown>): string {
+  const ifTagRe = /\{%\s*if\s+([\s\S]*?)\s*%\}/g;
+  let fm;
+
+  while ((fm = ifTagRe.exec(xml)) !== null) {
+    const condition = fm[1];
+
+    // Find enclosing paragraph of {% if %}
+    const ifPStart = findEnclosingParagraphStart(xml, fm.index);
+    const ifPEnd = findEnclosingParagraphEnd(xml, fm.index);
+
+    // Find {% else %} and its enclosing paragraph
+    const elseRe = /\{%\s*else\s*%\}/g;
+    elseRe.lastIndex = ifPEnd;
+    const elseMatch = elseRe.exec(xml);
+    if (!elseMatch) continue;
+    const elsePStart = findEnclosingParagraphStart(xml, elseMatch.index);
+    const elsePEnd = findEnclosingParagraphEnd(xml, elseMatch.index);
+
+    // Find {% endif %} and its enclosing paragraph
+    const endifRe = /\{%\s*endif\s*%\}/g;
+    endifRe.lastIndex = elsePEnd;
+    const endifMatch = endifRe.exec(xml);
+    if (!endifMatch) continue;
+    const endifPStart = findEnclosingParagraphStart(xml, endifMatch.index);
+    const endifPEnd = findEnclosingParagraphEnd(xml, endifMatch.index);
+
+    const ifBlock = xml.substring(ifPEnd, elsePStart);
+    const elseBlock = xml.substring(elsePEnd, endifPStart);
+
+    const result = evaluateCondition(condition, ctx);
+    const replacement = result ? ifBlock : elseBlock;
+
+    xml = xml.substring(0, ifPStart) + replacement + xml.substring(endifPEnd);
+    ifTagRe.lastIndex = 0;
+  }
+
+  return xml;
 }
 
 function processForLoops(xml: string, ctx: Record<string, unknown>): string {
@@ -103,35 +154,38 @@ function processForLoops(xml: string, ctx: Record<string, unknown>): string {
   while ((fm = forRegex.exec(xml)) !== null) {
     const itemVar = fm[1];
     const listVar = fm[2];
-    const forTagEnd = fm.index + fm[0].length;
 
+    // Find enclosing paragraph of {% for %}
+    const forPStart = findEnclosingParagraphStart(xml, fm.index);
+    const forPEnd = findEnclosingParagraphEnd(xml, fm.index);
+
+    // Find {% endfor %} and its enclosing paragraph
     const endforRe = /\{%\s*endfor\s*%\}/g;
-    endforRe.lastIndex = forTagEnd;
+    endforRe.lastIndex = forPEnd;
     const endm = endforRe.exec(xml);
     if (!endm) continue;
+    const endforPStart = findEnclosingParagraphStart(xml, endm.index);
+    const endforPEnd = findEnclosingParagraphEnd(xml, endm.index);
 
-    const endforEnd = endm.index + endm[0].length;
-    const templateBlock = xml.substring(forTagEnd, endm.index);
-
-    const beforeFor = xml.substring(0, fm.index);
-    const forRowStart = Math.max(beforeFor.lastIndexOf("<w:tr "), beforeFor.lastIndexOf("<w:tr>"));
-
-    const afterEndfor = xml.substring(endforEnd);
-    const endforRowEnd = endforEnd + afterEndfor.indexOf("</w:tr>") + 7;
+    // Template block is everything between the for-paragraph and endfor-paragraph
+    const templateBlock = xml.substring(forPEnd, endforPStart);
 
     const items = (ctx[listVar] || []) as RowData[];
     let generatedXml = "";
 
     for (const item of items) {
       let rowXml = templateBlock;
+      // Process conditionals within the loop iteration
       rowXml = processConditionals(rowXml, { ...ctx, [itemVar]: item });
+      // Replace item variables
       rowXml = rowXml.replace(/\{\{\s*item\.(\w+)\s*\}\}/g, (_m, field: string) => {
         return linebreaksToXml(item[field] || "");
       });
       generatedXml += rowXml;
     }
 
-    xml = xml.substring(0, forRowStart) + generatedXml + xml.substring(endforRowEnd);
+    // Replace from start of for-paragraph through end of endfor-paragraph
+    xml = xml.substring(0, forPStart) + generatedXml + xml.substring(endforPEnd);
     forRegex.lastIndex = 0;
   }
 
